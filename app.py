@@ -3,6 +3,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 
 # --- CONFIGURATION (Hidden from public) ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -21,19 +22,15 @@ def send_telegram_alert(new_product_name, seller_url):
 
 def get_current_products(seller_url, page):
     try:
-        # 1. Navigate to the seller page
         page.goto(seller_url, wait_until="domcontentloaded")
         
-        # 2. SUPERPOWER: Wait specifically for a product link to appear on screen!
-        # If the seller is completely out of stock, it waits 5 seconds, gives up, and safely returns 0 items.
+        # We give the GitHub server up to 15 seconds to fetch the API data and render the products
         try:
-            page.wait_for_selector('a[href*="/en/products/view/"]', timeout=5000)
-            # Add a tiny 1-second buffer just in case multiple products are loading in one by one
-            page.wait_for_timeout(1000)
+            page.wait_for_selector('a[href*="products/view/"]', timeout=15000)
+            page.wait_for_timeout(1000) # Small buffer
         except:
             print(f"  -> No products currently listed (or timeout) for {seller_url}")
         
-        # 3. Grab the fully loaded HTML 
         html = page.content()
         soup = BeautifulSoup(html, 'html.parser')
         
@@ -42,11 +39,10 @@ def get_current_products(seller_url, page):
         
         products_on_page = set()
         
-        # 4. SMART SELECTOR: Find all links that contain "/en/products/view/"
-        product_links = soup.find_all('a', href=lambda href: href and '/en/products/view/' in href)
+        # SMART SELECTOR: Now looks for any link containing 'products/view/' to catch all variations
+        product_links = soup.find_all('a', href=lambda href: href and 'products/view/' in href)
         
         for link in product_links:
-            # The product name is always inside an <h3> tag within this link
             h3 = link.find('h3')
             if h3:
                 title = h3.get_text(strip=True)
@@ -64,10 +60,8 @@ def main():
         print("Error: No sellers found in secrets!")
         return
 
-    # Split the secret by commas to get a list of all your sellers
     sellers = [s.strip() for s in SELLERS_ENV.split(',') if s.strip()]
     
-    # Load memory of all sellers
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             known_state = json.load(f)
@@ -78,27 +72,32 @@ def main():
 
     new_state = {}
 
-    # Start the invisible Playwright browser
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        # We give it a standard Windows/Chrome user-agent to look like a real human
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+        # Launch browser with arguments that disable automated bot detection
+        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        
+        # Use a modern User-Agent and a standard 1080p screen size
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
+        )
+        
         page = context.new_page()
+        
+        # ACTIVATE STEALTH MODE: Patches the browser to look like a real human!
+        stealth_sync(page)
 
         for seller in sellers:
             print(f"Checking target: {seller}")
             current_products = get_current_products(seller, page)
             
             if current_products is None:
-                # If page fails to load completely, keep old memory so we don't mess up the data
                 new_state[seller] = known_state.get(seller, [])
                 continue
 
-            # Save current products to the new memory
             new_state[seller] = list(current_products)
             print(f"  -> Found {len(current_products)} products.")
 
-            # Check for new items (only if it's not the very first time the script is running)
             if not is_first_run and seller in known_state:
                 known_products = set(known_state[seller])
                 new_items = current_products - known_products
@@ -109,7 +108,6 @@ def main():
 
         browser.close()
 
-    # Save the updated memory back to the JSON file for the next 5-minute check
     with open(STATE_FILE, "w") as f:
         json.dump(new_state, f)
     print("State updated successfully.")
