@@ -1,5 +1,6 @@
 import os
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import json
 
@@ -19,23 +20,34 @@ def send_telegram_alert(new_product_name, seller_url):
         print(f"Failed to send Telegram message: {e}")
 
 def get_current_products(seller_url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    }
+    # cloudscraper acts like a real browser to bypass anti-bot walls
+    scraper = cloudscraper.create_scraper(browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    })
+    
     try:
-        response = requests.get(seller_url, headers=headers)
+        response = scraper.get(seller_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # NOTE: Remember to update 'PRODUCT_TITLE_CLASS' to the real BuySellVouchers class!
-        product_elements = soup.find_all(class_='text-[14px] leading-[120%] font-semibold text-textBlack mb-[10px] line-clamp-2 h-[34px]')
+        # Debugging: Print page title so we can see in GitHub logs if we got blocked
+        page_title = soup.title.string if soup.title else 'No Title'
+        print(f"Loaded page: {page_title}")
         
         products_on_page = set()
-        for element in product_elements:
-            title = element.get_text(strip=True)
-            if title:
-                products_on_page.add(title)
-                
+        
+        # Smart Scrape: Find all links that point to a product page
+        for link in soup.find_all('a', href=True):
+            if '/en/products/view/' in link['href']:
+                # Grab the title from the h3 tag inside that link
+                h3 = link.find('h3')
+                if h3:
+                    title = h3.get_text(strip=True)
+                    if title:
+                        products_on_page.add(title)
+                        
         return products_on_page
     except Exception as e:
         print(f"Error checking seller {seller_url}: {e}")
