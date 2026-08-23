@@ -1,8 +1,9 @@
 import os
-import requests
-import cloudscraper
-from bs4 import BeautifulSoup
 import json
+import time
+import requests
+from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION (Hidden from public) ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -19,35 +20,31 @@ def send_telegram_alert(new_product_name, seller_url):
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
 
-def get_current_products(seller_url):
-    # cloudscraper acts like a real browser to bypass anti-bot walls
-    scraper = cloudscraper.create_scraper(browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    })
-    
+def get_current_products(seller_url, page):
     try:
-        response = scraper.get(seller_url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Navigate to the seller page
+        page.goto(seller_url, wait_until="domcontentloaded")
         
-        # Debugging: Print page title so we can see in GitHub logs if we got blocked
+        # WAIT 3 SECONDS: Give the website's JavaScript time to load the products
+        page.wait_for_timeout(3000) 
+        
+        # Get the fully rendered HTML (exactly as a human sees it)
+        html = page.content()
+        soup = BeautifulSoup(html, 'html.parser')
+        
         page_title = soup.title.string if soup.title else 'No Title'
         print(f"Loaded page: {page_title}")
         
         products_on_page = set()
         
-        # Smart Scrape: Find all links that point to a product page
-        for link in soup.find_all('a', href=True):
-            if '/en/products/view/' in link['href']:
-                # Grab the title from the h3 tag inside that link
-                h3 = link.find('h3')
-                if h3:
-                    title = h3.get_text(strip=True)
-                    if title:
-                        products_on_page.add(title)
-                        
+        # Using the exact HTML class you found in the DevTools!
+        product_elements = soup.find_all(class_='text-[14px] leading-[120%] font-semibold text-textBlack mb-[10px] line-clamp-2 h-[34px]')
+        
+        for element in product_elements:
+            title = element.get_text(strip=True)
+            if title:
+                products_on_page.add(title)
+                
         return products_on_page
     except Exception as e:
         print(f"Error checking seller {seller_url}: {e}")
@@ -59,10 +56,8 @@ def main():
         print("Error: No sellers found in secrets!")
         return
 
-    # Split the secret by commas to get a list of all your sellers
     sellers = [s.strip() for s in SELLERS_ENV.split(',') if s.strip()]
     
-    # Load memory of all sellers
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             known_state = json.load(f)
@@ -73,29 +68,32 @@ def main():
 
     new_state = {}
 
-    # Check each seller one by one
-    for seller in sellers:
-        print(f"Checking target: {seller}")
-        current_products = get_current_products(seller)
-        
-        if current_products is None:
-            # If page fails to load, keep old memory so we don't mess up the data
-            new_state[seller] = known_state.get(seller, [])
-            continue
+    # Start the invisible Playwright browser
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+        page = context.new_page()
 
-        # Save current products to the new memory
-        new_state[seller] = list(current_products)
-
-        # If it's not the first time running, compare and alert!
-        if not is_first_run and seller in known_state:
-            known_products = set(known_state[seller])
-            new_items = current_products - known_products
+        for seller in sellers:
+            print(f"Checking target: {seller}")
+            current_products = get_current_products(seller, page)
             
-            for item in new_items:
-                print(f"Detected new product: {item}")
-                send_telegram_alert(item, seller)
+            if current_products is None:
+                new_state[seller] = known_state.get(seller, [])
+                continue
 
-    # Save the updated memory back to the JSON file
+            new_state[seller] = list(current_products)
+
+            if not is_first_run and seller in known_state:
+                known_products = set(known_state[seller])
+                new_items = current_products - known_products
+                
+                for item in new_items:
+                    print(f"Detected new product: {item}")
+                    send_telegram_alert(item, seller)
+
+        browser.close()
+
     with open(STATE_FILE, "w") as f:
         json.dump(new_state, f)
     print("State updated successfully.")
