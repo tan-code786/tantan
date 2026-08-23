@@ -28,7 +28,7 @@ def get_current_products(seller_url):
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # NOTE: Remember to update 'PRODUCT_TITLE_CLASS' to the real BuySellVouchers class!
-        product_elements = soup.find_all('div', class_='PRODUCT_TITLE_CLASS')
+        product_elements = soup.find_all(class_='text-[14px] leading-[120%] font-semibold text-textBlack mb-[10px] line-clamp-2 h-[34px]')
         
         products_on_page = set()
         for element in product_elements:
