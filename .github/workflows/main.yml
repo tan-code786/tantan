@@ -22,7 +22,8 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install requests beautifulsoup4 cloudscraper
+          pip install requests beautifulsoup4 playwright
+          playwright install chromium
 
       - name: Run script
         env:
