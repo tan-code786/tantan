@@ -22,7 +22,7 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install requests beautifulsoup4 playwright
+          pip install requests beautifulsoup4 playwright playwright-stealth
           playwright install chromium
 
       - name: Run script
