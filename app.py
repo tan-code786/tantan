@@ -3,7 +3,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
+from playwright_stealth import stealth # <--- FIXED IMPORT
 
 # --- CONFIGURATION (Hidden from public) ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -85,7 +85,7 @@ def main():
         page = context.new_page()
         
         # ACTIVATE STEALTH MODE: Patches the browser to look like a real human!
-        stealth_sync(page)
+        stealth(page) # <--- FIXED COMMAND
 
         for seller in sellers:
             print(f"Checking target: {seller}")
