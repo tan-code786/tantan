@@ -14,7 +14,14 @@ STATE_FILE = "state.json"
 def send_telegram_alert(new_product_name, seller_url):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     message = f"🚨 NEW INVENTORY ALERT!\nProduct: {new_product_name}\nLink: {seller_url}"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    
+    # We added the disable feature here so Telegram stops attaching the picture!
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID, 
+        "text": message,
+        "disable_web_page_preview": True
+    }
+    
     try:
         requests.post(url, json=payload)
     except Exception as e:
