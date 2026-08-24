@@ -1,10 +1,11 @@
 name: System Check
 
 on:
-  schedule:
-    - cron: '7,22,37,52 * * * *' # Runs every 5 minutes
-  workflow_dispatch: # Allows you to click a button to run it manually
+  workflow_dispatch:
 
+concurrency: 
+  group: tracker-bot
+  
 jobs:
   run-tracker:
     runs-on: ubuntu-latest
