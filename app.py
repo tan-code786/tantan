@@ -45,7 +45,6 @@ def get_current_products(seller_url):
         soup = BeautifulSoup(html, 'html.parser')
         
         page_title = soup.title.string if soup.title else 'No Title'
-        print(f"  -> Loaded: {page_title} | ({seller_url})")
         
         if "Just a moment" in page_title or "Attention Required" in page_title:
             print(f"  -> Cloudflare is still blocking {seller_url}.")
@@ -70,7 +69,7 @@ def process_seller(seller):
     """This function is run by the worker threads"""
     print(f"Checking target: {seller}")
     products = get_current_products(seller)
-    return seller, products
+    return products # <--- THIS IS THE FIX! (Removed 'seller,')
 
 def main():
     print("Starting Tracker...")
@@ -113,7 +112,7 @@ def main():
 
             if not is_first_run and seller in known_state:
                 known_products = set(known_state[seller])
-                new_items = set(current_products) - known_products
+                new_items = current_products - known_products
                 
                 for item in new_items:
                     print(f"  🚨 Detected new product: {item}")
