@@ -3,7 +3,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth # <--- V2.0 IMPORT FIX
+from playwright_stealth import Stealth
 
 # --- CONFIGURATION (Hidden from public) ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -12,26 +12,29 @@ SELLERS_ENV = os.environ.get("SELLERS")
 STATE_FILE = "state.json"
 
 def send_telegram_alert(new_product_name, seller_url):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    message = f"🚨 NEW INVENTORY ALERT!\nProduct: {new_product_name}\nLink: {seller_url}"
+    # Splits comma-separated chat IDs so you can send to multiple people if needed
+    chat_ids = [chat_id.strip() for chat_id in TELEGRAM_CHAT_ID.split(',')]
     
-    # We added the disable feature here so Telegram stops attaching the picture!
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID, 
-        "text": message,
-        "disable_web_page_preview": True
-    }
-    
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
+    for chat_id in chat_ids:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        message = f"🚨 NEW INVENTORY ALERT!\nProduct: {new_product_name}\nLink: {seller_url}"
+        
+        payload = {
+            "chat_id": chat_id, 
+            "text": message,
+            "disable_web_page_preview": True
+        }
+        
+        try:
+            requests.post(url, json=payload)
+        except Exception as e:
+            print(f"Failed to send Telegram message to {chat_id}: {e}")
 
 def get_current_products(seller_url, page):
     try:
         page.goto(seller_url, wait_until="domcontentloaded")
         
-        # We give the GitHub server up to 15 seconds to fetch the API data and render the products
+        # We give the server up to 15 seconds to fetch the API data and render the products
         try:
             page.wait_for_selector('a[href*="products/view/"]', timeout=15000)
             page.wait_for_timeout(1000) # Small buffer
@@ -46,7 +49,7 @@ def get_current_products(seller_url, page):
         
         products_on_page = set()
         
-        # SMART SELECTOR: Now looks for any link containing 'products/view/' to catch all variations
+        # SMART SELECTOR: Looks for any link containing 'products/view/' to catch all variations
         product_links = soup.find_all('a', href=lambda href: href and 'products/view/' in href)
         
         for link in product_links:
@@ -80,19 +83,15 @@ def main():
     new_state = {}
 
     with sync_playwright() as p:
-        # Launch browser with arguments that disable automated bot detection
-        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        # Launch a VISIBLE browser (headless=False) to bypass Cloudflare's Under Attack mode
+        browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
         
-        # Use a modern User-Agent and a standard 1080p screen size
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
-        )
-        
+        # Using a standard 1080p screen size, allowing Chrome to generate its own authentic User-Agent
+        context = browser.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
         
-        # ACTIVATE STEALTH MODE: Patches the browser using the V2 API!
-        Stealth().apply_stealth_sync(page) # <--- V2.0 COMMAND FIX
+        # ACTIVATE STEALTH MODE: Patches the browser using the V2 API
+        Stealth().apply_stealth_sync(page)
 
         for seller in sellers:
             print(f"Checking target: {seller}")
