@@ -2,54 +2,62 @@ import os
 import json
 import requests
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
 
-# --- CONFIGURATION (Hidden from public) ---
+# --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SELLERS_ENV = os.environ.get("SELLERS")
 STATE_FILE = "state.json"
 
+# This connects to the FlareSolverr container we added in main.yml
+FLARESOLVERR_URL = "http://localhost:8191/v1"
+
 def send_telegram_alert(new_product_name, seller_url):
-    # Splits comma-separated chat IDs so you can send to multiple people if needed
     chat_ids = [chat_id.strip() for chat_id in TELEGRAM_CHAT_ID.split(',')]
-    
     for chat_id in chat_ids:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         message = f"🚨 NEW INVENTORY ALERT!\nProduct: {new_product_name}\nLink: {seller_url}"
-        
-        payload = {
-            "chat_id": chat_id, 
-            "text": message,
-            "disable_web_page_preview": True
-        }
-        
+        payload = {"chat_id": chat_id, "text": message, "disable_web_page_preview": True}
         try:
             requests.post(url, json=payload)
         except Exception as e:
             print(f"Failed to send Telegram message to {chat_id}: {e}")
 
-def get_current_products(seller_url, page):
+def get_current_products(seller_url):
     try:
-        page.goto(seller_url, wait_until="domcontentloaded")
+        # Ask FlareSolverr to go fight Cloudflare for us
+        payload = {
+            "cmd": "request.get",
+            "url": seller_url,
+            "maxTimeout": 60000 # Give it up to 60 seconds to pass the challenge
+        }
+        headers = {"Content-Type": "application/json"}
         
-        # We give the server up to 15 seconds to fetch the API data and render the products
-        try:
-            page.wait_for_selector('a[href*="products/view/"]', timeout=15000)
-            page.wait_for_timeout(1000) # Small buffer
-        except:
-            print(f"  -> No products currently listed (or timeout) for {seller_url}")
+        # Send the request to FlareSolverr
+        response = requests.post(FLARESOLVERR_URL, headers=headers, json=payload, timeout=65)
+        response.raise_for_status()
         
-        html = page.content()
+        data = response.json()
+        
+        if data.get("status") != "ok":
+            print(f"  -> FlareSolverr failed: {data.get('message')}")
+            return None
+            
+        # FlareSolverr successfully got the HTML!
+        html = data.get("solution", {}).get("response", "")
         soup = BeautifulSoup(html, 'html.parser')
         
         page_title = soup.title.string if soup.title else 'No Title'
         print(f"  -> Loaded page: {page_title}")
         
+        # Double check that Cloudflare isn't still blocking us
+        if "Just a moment" in page_title or "Attention Required" in page_title:
+            print("  -> Cloudflare is still blocking the page.")
+            return None
+
         products_on_page = set()
         
-        # SMART SELECTOR: Looks for any link containing 'products/view/' to catch all variations
+        # SMART SELECTOR
         product_links = soup.find_all('a', href=lambda href: href and 'products/view/' in href)
         
         for link in product_links:
@@ -82,37 +90,24 @@ def main():
 
     new_state = {}
 
-    with sync_playwright() as p:
-        # Launch a VISIBLE browser (headless=False) to bypass Cloudflare's Under Attack mode
-        browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
+    for seller in sellers:
+        print(f"Checking target: {seller}")
+        current_products = get_current_products(seller)
         
-        # Using a standard 1080p screen size, allowing Chrome to generate its own authentic User-Agent
-        context = browser.new_context(viewport={"width": 1920, "height": 1080})
-        page = context.new_page()
-        
-        # ACTIVATE STEALTH MODE: Patches the browser using the V2 API
-        Stealth().apply_stealth_sync(page)
+        if current_products is None:
+            new_state[seller] = known_state.get(seller, [])
+            continue
 
-        for seller in sellers:
-            print(f"Checking target: {seller}")
-            current_products = get_current_products(seller, page)
+        new_state[seller] = list(current_products)
+        print(f"  -> Found {len(current_products)} products.")
+
+        if not is_first_run and seller in known_state:
+            known_products = set(known_state[seller])
+            new_items = set(current_products) - known_products
             
-            if current_products is None:
-                new_state[seller] = known_state.get(seller, [])
-                continue
-
-            new_state[seller] = list(current_products)
-            print(f"  -> Found {len(current_products)} products.")
-
-            if not is_first_run and seller in known_state:
-                known_products = set(known_state[seller])
-                new_items = current_products - known_products
-                
-                for item in new_items:
-                    print(f"  🚨 Detected new product: {item}")
-                    send_telegram_alert(item, seller)
-
-        browser.close()
+            for item in new_items:
+                print(f"  🚨 Detected new product: {item}")
+                send_telegram_alert(item, seller)
 
     with open(STATE_FILE, "w") as f:
         json.dump(new_state, f)
