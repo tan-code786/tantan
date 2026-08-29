@@ -2,6 +2,7 @@ import os
 import json
 import requests
 from bs4 import BeautifulSoup
+import concurrent.futures
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -9,7 +10,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SELLERS_ENV = os.environ.get("SELLERS")
 STATE_FILE = "state.json"
 
-# This connects to the FlareSolverr container we added in main.yml
 FLARESOLVERR_URL = "http://localhost:8191/v1"
 
 def send_telegram_alert(new_product_name, seller_url):
@@ -25,39 +25,33 @@ def send_telegram_alert(new_product_name, seller_url):
 
 def get_current_products(seller_url):
     try:
-        # Ask FlareSolverr to go fight Cloudflare for us
         payload = {
             "cmd": "request.get",
             "url": seller_url,
-            "maxTimeout": 60000 # Give it up to 60 seconds to pass the challenge
+            "maxTimeout": 60000 
         }
         headers = {"Content-Type": "application/json"}
         
-        # Send the request to FlareSolverr
         response = requests.post(FLARESOLVERR_URL, headers=headers, json=payload, timeout=65)
         response.raise_for_status()
         
         data = response.json()
         
         if data.get("status") != "ok":
-            print(f"  -> FlareSolverr failed: {data.get('message')}")
+            print(f"  -> FlareSolverr failed for {seller_url}: {data.get('message')}")
             return None
             
-        # FlareSolverr successfully got the HTML!
         html = data.get("solution", {}).get("response", "")
         soup = BeautifulSoup(html, 'html.parser')
         
         page_title = soup.title.string if soup.title else 'No Title'
-        print(f"  -> Loaded page: {page_title}")
+        print(f"  -> Loaded: {page_title} | ({seller_url})")
         
-        # Double check that Cloudflare isn't still blocking us
         if "Just a moment" in page_title or "Attention Required" in page_title:
-            print("  -> Cloudflare is still blocking the page.")
+            print(f"  -> Cloudflare is still blocking {seller_url}.")
             return None
 
         products_on_page = set()
-        
-        # SMART SELECTOR
         product_links = soup.find_all('a', href=lambda href: href and 'products/view/' in href)
         
         for link in product_links:
@@ -71,6 +65,12 @@ def get_current_products(seller_url):
     except Exception as e:
         print(f"Error checking seller {seller_url}: {e}")
         return None
+
+def process_seller(seller):
+    """This function is run by the worker threads"""
+    print(f"Checking target: {seller}")
+    products = get_current_products(seller)
+    return seller, products
 
 def main():
     print("Starting Tracker...")
@@ -90,24 +90,34 @@ def main():
 
     new_state = {}
 
-    for seller in sellers:
-        print(f"Checking target: {seller}")
-        current_products = get_current_products(seller)
+    # MULTITHREADING: Run 3 sellers at the exact same time!
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        # Send all sellers to the worker pool
+        futures = {executor.submit(process_seller, seller): seller for seller in sellers}
         
-        if current_products is None:
-            new_state[seller] = known_state.get(seller, [])
-            continue
-
-        new_state[seller] = list(current_products)
-        print(f"  -> Found {len(current_products)} products.")
-
-        if not is_first_run and seller in known_state:
-            known_products = set(known_state[seller])
-            new_items = set(current_products) - known_products
+        # As soon as a seller finishes, process its results
+        for future in concurrent.futures.as_completed(futures):
+            seller = futures[future]
+            try:
+                current_products = future.result()
+            except Exception as e:
+                print(f"Thread error for {seller}: {e}")
+                current_products = None
             
-            for item in new_items:
-                print(f"  🚨 Detected new product: {item}")
-                send_telegram_alert(item, seller)
+            if current_products is None:
+                new_state[seller] = known_state.get(seller, [])
+                continue
+
+            new_state[seller] = list(current_products)
+            print(f"  -> Found {len(current_products)} products for {seller}")
+
+            if not is_first_run and seller in known_state:
+                known_products = set(known_state[seller])
+                new_items = set(current_products) - known_products
+                
+                for item in new_items:
+                    print(f"  🚨 Detected new product: {item}")
+                    send_telegram_alert(item, seller)
 
     with open(STATE_FILE, "w") as f:
         json.dump(new_state, f)
