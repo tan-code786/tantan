@@ -11,6 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write 
+    
+    # THIS IS THE MAGIC: It boots up the anti-Cloudflare server!
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
 
     steps:
       - name: Checkout repository
@@ -22,18 +29,15 @@ jobs:
           python-version: '3.10'
 
       - name: Install packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb
-          pip install requests beautifulsoup4 playwright playwright-stealth
-          playwright install chromium
+        # Look how much cleaner this is! We only need two libraries now.
+        run: pip install requests beautifulsoup4
 
       - name: Run script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SELLERS: ${{ secrets.SELLERS }}
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python app.py
+        run: python app.py
 
       - name: Save memory back to GitHub
         run: |
